@@ -459,17 +459,148 @@ app.get("/:token/stream/:type/:id.json", async (req, res) => {
 
     try {
         const { token, type, id } = req.params;
+        const serverBaseUrl = `${req.protocol}://${req.get('host')}`;
 
         const result = await addon.streamHandler({
             type,
             id: id.replace(".json", ""),
             config: { token: decodeURIComponent(token) }
-        });
+        }, serverBaseUrl);
 
         res.json(result);
     } catch (error) {
         console.error("Stream error:", error);
         res.json({ streams: [] });
+    }
+});
+
+// ============================================
+// Resolve Endpoint - Download torrent and redirect to stream
+// ============================================
+app.get("/:token/resolve/:infoHash", async (req, res) => {
+    const { token, infoHash } = req.params;
+    const { name, trackers, fileIdx } = req.query;
+    const accessToken = decodeURIComponent(token);
+
+    console.log("============================================");
+    console.log("🔄 Resolve request for infoHash:", infoHash);
+    console.log("   Name:", name);
+    console.log("============================================");
+
+    try {
+        // Build magnet link from parameters
+        let magnet = `magnet:?xt=urn:btih:${infoHash}`;
+        if (name) {
+            magnet += `&dn=${encodeURIComponent(name)}`;
+        }
+        if (trackers) {
+            const trackerList = trackers.split(",");
+            for (const tracker of trackerList) {
+                magnet += `&tr=${encodeURIComponent(tracker)}`;
+            }
+        }
+
+        console.log("📥 Adding magnet to Seedr...");
+
+        // Check if already downloading or completed
+        let transfers = await seedrApi.getActiveTransfers(accessToken);
+        let existingTransfer = transfers.find(t =>
+            t.name && name && t.name.toLowerCase().includes(name.toLowerCase().substring(0, 20))
+        );
+
+        // If not found in transfers, check if already in files
+        if (!existingTransfer) {
+            const videos = await seedrApi.getAllVideoFiles(accessToken);
+            const matchingVideo = videos.find(v => {
+                const videoNameLower = v.name.toLowerCase();
+                const searchName = (name || "").toLowerCase();
+                return videoNameLower.includes(searchName.substring(0, 20)) ||
+                    searchName.includes(videoNameLower.replace(/\.[^/.]+$/, "").substring(0, 20));
+            });
+
+            if (matchingVideo) {
+                console.log("✅ File already exists in Seedr:", matchingVideo.name);
+                const streamData = await seedrApi.getStreamUrl(accessToken, matchingVideo.id);
+                if (streamData && streamData.url) {
+                    console.log("🎬 Redirecting to stream URL");
+                    return res.redirect(307, streamData.url);
+                }
+            }
+        }
+
+        // Add magnet if not already in transfers
+        if (!existingTransfer) {
+            const addResult = await seedrApi.addMagnet(accessToken, magnet);
+            console.log("📥 Add magnet result:", JSON.stringify(addResult));
+
+            if (addResult.error) {
+                console.error("❌ Failed to add magnet:", addResult.error);
+                return res.status(500).json({ error: addResult.error });
+            }
+        }
+
+        // Poll for completion (5 minute timeout, 3 second intervals)
+        const maxAttempts = 100; // 100 * 3s = 5 minutes
+        const pollInterval = 3000;
+        let attempts = 0;
+
+        console.log("⏳ Waiting for download to complete...");
+
+        const pollForCompletion = async () => {
+            attempts++;
+
+            // Check transfers for progress
+            transfers = await seedrApi.getActiveTransfers(accessToken);
+            const transfer = transfers.find(t =>
+                t.name && name && t.name.toLowerCase().includes(name.toLowerCase().substring(0, 20))
+            );
+
+            if (transfer) {
+                const progress = transfer.progress || 0;
+                console.log(`   Progress: ${progress}% (attempt ${attempts}/${maxAttempts})`);
+
+                if (progress >= 100) {
+                    // Download complete - wait a moment for file to be moved to folder
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                }
+            }
+
+            // Check if file is now in videos
+            const videos = await seedrApi.getAllVideoFiles(accessToken);
+            const matchingVideo = videos.find(v => {
+                const videoNameLower = v.name.toLowerCase();
+                const searchName = (name || "").toLowerCase();
+                return videoNameLower.includes(searchName.substring(0, 20)) ||
+                    searchName.includes(videoNameLower.replace(/\.[^/.]+$/, "").substring(0, 20));
+            });
+
+            if (matchingVideo) {
+                console.log("✅ Download complete:", matchingVideo.name);
+                const streamData = await seedrApi.getStreamUrl(accessToken, matchingVideo.id);
+                if (streamData && streamData.url) {
+                    console.log("🎬 Redirecting to stream URL");
+                    return res.redirect(307, streamData.url);
+                }
+            }
+
+            // Continue polling if not found and within timeout
+            if (attempts < maxAttempts) {
+                setTimeout(pollForCompletion, pollInterval);
+            } else {
+                console.log("⏰ Timeout waiting for download");
+                return res.status(408).json({
+                    error: "Download timeout",
+                    message: "The download is taking longer than expected. Please check Seedr Downloads catalog and try again."
+                });
+            }
+        };
+
+        // Start polling
+        await pollForCompletion();
+
+    } catch (error) {
+        console.error("❌ Resolve error:", error.message);
+        res.status(500).json({ error: error.message });
     }
 });
 

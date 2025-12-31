@@ -142,11 +142,72 @@ async function getUserInfo(accessToken) {
     return response.data;
 }
 
+/**
+ * Add a magnet link to Seedr for downloading
+ * @param {string} accessToken - The access token
+ * @param {string} magnetLink - The magnet URI to add
+ * @returns {Promise<{result: boolean, user_torrent_id?: number, error?: string}>}
+ */
+async function addMagnet(accessToken, magnetLink) {
+    const formData = new URLSearchParams();
+    formData.append("access_token", accessToken);
+    formData.append("func", "add_torrent");
+    formData.append("torrent_magnet", magnetLink);
+
+    const response = await axios.post(`${SEEDR_BASE_URL}/oauth_test/resource.php`, formData, {
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+    });
+
+    return response.data;
+}
+
+/**
+ * Get active transfers (downloading torrents) from Seedr
+ * The transfers are included in the root folder response
+ * @param {string} accessToken - The access token
+ * @returns {Promise<Array<{id: number, name: string, progress: number, size: number}>>}
+ */
+async function getActiveTransfers(accessToken) {
+    try {
+        const folderData = await getFolder(accessToken, null);
+        return folderData.transfers || [];
+    } catch (error) {
+        console.error("Error getting active transfers:", error.message);
+        return [];
+    }
+}
+
+/**
+ * Delete a folder from Seedr
+ * @param {string} accessToken - The access token
+ * @param {string} folderId - The folder ID to delete
+ * @returns {Promise<Object>}
+ */
+async function deleteFolder(accessToken, folderId) {
+    const formData = new URLSearchParams();
+    formData.append("access_token", accessToken);
+    formData.append("func", "delete");
+    formData.append("delete_arr", JSON.stringify([{ type: "folder", id: folderId }]));
+
+    const response = await axios.post(`${SEEDR_BASE_URL}/oauth_test/resource.php`, formData, {
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+    });
+
+    return response.data;
+}
+
 module.exports = {
     getDeviceCode,
     pollForToken,
     getFolder,
     getAllVideoFiles,
     getStreamUrl,
-    getUserInfo
+    getUserInfo,
+    addMagnet,
+    getActiveTransfers,
+    deleteFolder
 };
