@@ -146,13 +146,15 @@ async function getUserInfo(accessToken) {
  * Add a magnet link to Seedr for downloading
  * @param {string} accessToken - The access token
  * @param {string} magnetLink - The magnet URI to add
+ * @param {number} folderId - Target folder ID (-1 for root folder)
  * @returns {Promise<{result: boolean, user_torrent_id?: number, error?: string}>}
  */
-async function addMagnet(accessToken, magnetLink) {
+async function addMagnet(accessToken, magnetLink, folderId = -1) {
     const formData = new URLSearchParams();
     formData.append("access_token", accessToken);
     formData.append("func", "add_torrent");
     formData.append("torrent_magnet", magnetLink);
+    formData.append("folder_id", folderId.toString());
 
     const response = await axios.post(`${SEEDR_BASE_URL}/oauth_test/resource.php`, formData, {
         headers: {
@@ -160,7 +162,13 @@ async function addMagnet(accessToken, magnetLink) {
         }
     });
 
-    return response.data;
+    const result = response.data;
+
+    if (result.error) {
+        throw new Error(`Failed to add magnet: ${result.error}`);
+    }
+
+    return result;
 }
 
 /**

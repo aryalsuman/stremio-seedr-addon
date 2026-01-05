@@ -501,102 +501,13 @@ app.get("/:token/resolve/:infoHash", async (req, res) => {
         }
 
         console.log("📥 Adding magnet to Seedr...");
+        console.log("🧲 Magnet URL:", magnet);
 
-        // Check if already downloading or completed
-        let transfers = await seedrApi.getActiveTransfers(accessToken);
-        let existingTransfer = transfers.find(t =>
-            t.name && name && t.name.toLowerCase().includes(name.toLowerCase().substring(0, 20))
-        );
+        // Add magnet to Seedr
+        const result = await seedrApi.addMagnet(accessToken, magnet);
+        console.log("✅ Seedr response:", JSON.stringify(result, null, 2));
 
-        // If not found in transfers, check if already in files
-        if (!existingTransfer) {
-            const videos = await seedrApi.getAllVideoFiles(accessToken);
-            const matchingVideo = videos.find(v => {
-                const videoNameLower = v.name.toLowerCase();
-                const searchName = (name || "").toLowerCase();
-                return videoNameLower.includes(searchName.substring(0, 20)) ||
-                    searchName.includes(videoNameLower.replace(/\.[^/.]+$/, "").substring(0, 20));
-            });
-
-            if (matchingVideo) {
-                console.log("✅ File already exists in Seedr:", matchingVideo.name);
-                const streamData = await seedrApi.getStreamUrl(accessToken, matchingVideo.id);
-                if (streamData && streamData.url) {
-                    console.log("🎬 Redirecting to stream URL");
-                    return res.redirect(307, streamData.url);
-                }
-            }
-        }
-
-        // Add magnet if not already in transfers
-        if (!existingTransfer) {
-            const addResult = await seedrApi.addMagnet(accessToken, magnet);
-            console.log("📥 Add magnet result:", JSON.stringify(addResult));
-
-            if (addResult.error) {
-                console.error("❌ Failed to add magnet:", addResult.error);
-                return res.status(500).json({ error: addResult.error });
-            }
-        }
-
-        // Poll for completion (5 minute timeout, 3 second intervals)
-        const maxAttempts = 100; // 100 * 3s = 5 minutes
-        const pollInterval = 3000;
-        let attempts = 0;
-
-        console.log("⏳ Waiting for download to complete...");
-
-        const pollForCompletion = async () => {
-            attempts++;
-
-            // Check transfers for progress
-            transfers = await seedrApi.getActiveTransfers(accessToken);
-            const transfer = transfers.find(t =>
-                t.name && name && t.name.toLowerCase().includes(name.toLowerCase().substring(0, 20))
-            );
-
-            if (transfer) {
-                const progress = transfer.progress || 0;
-                console.log(`   Progress: ${progress}% (attempt ${attempts}/${maxAttempts})`);
-
-                if (progress >= 100) {
-                    // Download complete - wait a moment for file to be moved to folder
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                }
-            }
-
-            // Check if file is now in videos
-            const videos = await seedrApi.getAllVideoFiles(accessToken);
-            const matchingVideo = videos.find(v => {
-                const videoNameLower = v.name.toLowerCase();
-                const searchName = (name || "").toLowerCase();
-                return videoNameLower.includes(searchName.substring(0, 20)) ||
-                    searchName.includes(videoNameLower.replace(/\.[^/.]+$/, "").substring(0, 20));
-            });
-
-            if (matchingVideo) {
-                console.log("✅ Download complete:", matchingVideo.name);
-                const streamData = await seedrApi.getStreamUrl(accessToken, matchingVideo.id);
-                if (streamData && streamData.url) {
-                    console.log("🎬 Redirecting to stream URL");
-                    return res.redirect(307, streamData.url);
-                }
-            }
-
-            // Continue polling if not found and within timeout
-            if (attempts < maxAttempts) {
-                setTimeout(pollForCompletion, pollInterval);
-            } else {
-                console.log("⏰ Timeout waiting for download");
-                return res.status(408).json({
-                    error: "Download timeout",
-                    message: "The download is taking longer than expected. Please check Seedr Downloads catalog and try again."
-                });
-            }
-        };
-
-        // Start polling
-        await pollForCompletion();
+        res.json({ success: true, result });
 
     } catch (error) {
         console.error("❌ Resolve error:", error.message);
