@@ -255,10 +255,10 @@ async function deleteAllContent(accessToken) {
             }
         });
 
-        return { 
-            result: response.data.result || true, 
-            deleted: deleteItems.length, 
-            message: `Deleted ${deleteItems.length} items` 
+        return {
+            result: response.data.result || true,
+            deleted: deleteItems.length,
+            message: `Deleted ${deleteItems.length} items`
         };
     } catch (error) {
         console.error("Error deleting all content:", error.message);
