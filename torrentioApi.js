@@ -147,33 +147,38 @@ function buildMagnet(stream) {
 
 /**
  * Format stream for display in Stremio
+ * Multi-line format:
+ * Line 1: Full torrent name
+ * Line 2: Quality
+ * Line 3: Seeders + Size
  * @param {Object} stream - Parsed stream object
  * @returns {string}
  */
 function formatStreamTitle(stream) {
-    const parts = [];
+    const lines = [];
 
-    // Prioritize Quality
+    // Line 1: Full torrent name
+    const name = stream.title || stream.filename || "Unknown";
+    lines.push(`⬇️ ${name}`);
+
+    // Line 2: Quality
     if (stream.quality && stream.quality !== "Unknown") {
-        parts.push(`${stream.quality}`);
+        lines.push(`📺 ${stream.quality}`);
     }
 
-    // Then Seeders (Prominent)
-    if (stream.seeders && stream.seeders !== "0") {
-        parts.push(`👤 ${stream.seeders}`);
+    // Line 3: Seeders + Size
+    const metaParts = [];
+    if (stream.seeders && stream.seeders !== 0) {
+        metaParts.push(`👤 ${stream.seeders}`);
     }
-
-    // Then Size
     if (stream.size && stream.size !== "Unknown") {
-        parts.push(`${stream.size}`);
+        metaParts.push(`💾 ${stream.size}`);
+    }
+    if (metaParts.length > 0) {
+        lines.push(metaParts.join(" • "));
     }
 
-    // Finally Source
-    if (stream.source && stream.source !== "Unknown") {
-        parts.push(`${stream.source}`);
-    }
-
-    return parts.join("  |  ");
+    return lines.join("\n");
 }
 
 module.exports = {

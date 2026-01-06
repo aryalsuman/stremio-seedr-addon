@@ -188,6 +188,26 @@ async function getActiveTransfers(accessToken) {
 }
 
 /**
+ * Find a folder by name in the root directory
+ * @param {string} accessToken - The access token
+ * @param {string} folderName - The name of the folder to find
+ * @returns {Promise<Object|null>} - The folder object or null if not found
+ */
+async function getFolderByName(accessToken, folderName) {
+    try {
+        const rootFolder = await getFolder(accessToken, null);
+        if (rootFolder.folders) {
+            const folder = rootFolder.folders.find(f => f.name === folderName);
+            return folder || null;
+        }
+        return null;
+    } catch (error) {
+        console.error("Error getting folder by name:", error.message);
+        return null;
+    }
+}
+
+/**
  * Delete a folder from Seedr
  * @param {string} accessToken - The access token
  * @param {string} folderId - The folder ID to delete
@@ -266,6 +286,36 @@ async function deleteAllContent(accessToken) {
     }
 }
 
+/**
+ * Delete an item from wishlist
+ * @param {string} accessToken - The access token
+ * @param {number|string} wishlistId - The wishlist item ID to delete
+ * @returns {Promise<Object>}
+ */
+async function deleteFromWishlist(accessToken, wishlistId) {
+    const formData = new URLSearchParams();
+    formData.append("access_token", accessToken);
+    formData.append("func", "delete");
+    formData.append("delete_arr", JSON.stringify([{ type: "wishlist", id: wishlistId }]));
+
+    const response = await axios.post(`${SEEDR_BASE_URL}/oauth_test/resource.php`, formData, {
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+    });
+
+    return response.data;
+}
+
+/**
+ * Clear all content from Seedr account (alias for deleteAllContent)
+ * @param {string} accessToken - The access token
+ * @returns {Promise<{result: boolean, deleted: number, message: string}>}
+ */
+async function clearAccount(accessToken) {
+    return deleteAllContent(accessToken);
+}
+
 module.exports = {
     getDeviceCode,
     pollForToken,
@@ -275,6 +325,9 @@ module.exports = {
     getUserInfo,
     addMagnet,
     getActiveTransfers,
+    getFolderByName,
     deleteFolder,
-    deleteAllContent
+    deleteAllContent,
+    deleteFromWishlist,
+    clearAccount
 };

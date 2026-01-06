@@ -221,7 +221,7 @@ async function streamHandler(args, serverBaseUrl = "http://127.0.0.1:7000") {
                 streams.push({
                     url: resolveUrl,
                     title: `${streamTitle}`,
-                    name: "Seedr",
+                    name: stream.source || "Seedr",
                     behaviorHints: {
                         notWebReady: true
                     }
@@ -242,10 +242,17 @@ async function streamHandler(args, serverBaseUrl = "http://127.0.0.1:7000") {
                         try {
                             const streamData = await seedrApi.getStreamUrl(accessToken, video.id);
                             if (streamData && streamData.url) {
+                                // Format ready stream with multi-line display
+                                const readyTitle = [
+                                    `✅ ${video.name.replace(/\.[^/.]+$/, "")}`,
+                                    `Ready to Play`,
+                                    `💾 ${formatFileSize(video.size)}`
+                                ].join("\n");
+
                                 streams.unshift({
                                     url: streamData.url,
-                                    title: `✅ Ready | ${video.name}`,
-                                    name: "Seedr",
+                                    title: readyTitle,
+                                    name: "Seedr ✅",
                                     behaviorHints: {
                                         notWebReady: false
                                     }
