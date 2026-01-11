@@ -2,7 +2,7 @@
 
 > Stream movies and series from your Seedr cloud storage directly in Stremio. Automatically discovers torrents via Torrentio and downloads them to your Seedr account for instant streaming.
 
-[![Node.js](https://img.shields.io/badge/Node.js-24.x-green.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-20.x-green.svg)](https://nodejs.org/)
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/aryalsuman/stremio-seedr-addon)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -38,7 +38,7 @@
 
 ## 📋 Requirements
 
-- **Node.js** 24.x or higher (for local development)
+- **Node.js** 20.x or higher (for local development)
 - **Seedr Account** - [Free](https://www.seedr.cc/) or Premium
 - **Stremio** - [Download here](https://www.stremio.com/downloads)
 
@@ -105,7 +105,42 @@ Deploying to Vercel gives you a permanent URL that works 24/7 without running a 
 
 ---
 
-## 🔗 Connect with Seedr
+## � Self-Hosting Benefits & Privacy
+
+When you deploy your own instance, you get **complete privacy and isolation**:
+
+### Why Self-Host?
+
+| Benefit | Description |
+|---------|-------------|
+| 🔐 **Token Privacy** | Your Seedr access token stays on YOUR Vercel instance only |
+| 🚫 **No Shared Servers** | You're not sharing infrastructure with other users |
+| ⚡ **No Rate Limits** | Your own instance = your own API limits |
+| 🛡️ **Full Control** | You can inspect the code and verify nothing malicious is happening |
+
+### How Authentication Works
+
+This addon uses Seedr's **public OAuth client** (`seedr_xbmc`) - the same one used by Kodi/XBMC. This means:
+
+- ✅ No need to register your own OAuth application
+- ✅ No environment variables or secrets to configure  
+- ✅ Tokens are valid for 1 year
+- ✅ Just deploy and configure - it works out of the box!
+
+### Multi-User Support
+
+Each user who installs the addon gets a **unique URL** with their token:
+
+```
+https://your-vercel-app.vercel.app/{your-unique-token}/manifest.json
+https://your-vercel-app.vercel.app/{another-token}/manifest.json
+```
+
+Tokens are completely isolated - users can never access each other's Seedr files.
+
+---
+
+## �🔗 Connect with Seedr
 
 After deployment, follow these steps to connect your Seedr account:
 
@@ -245,7 +280,7 @@ Once authorized, you'll see two options:
 
 - Verify your deployment is active at vercel.com
 - Check Vercel function logs for errors
-- Ensure Node.js version is set to 24.x in Vercel settings
+- Ensure Node.js version is set to 20.x in Vercel settings
 
 ---
 
