@@ -1,7 +1,7 @@
 {
-  "name": "streamio_extension",
+  "name": "stremio-seedr-addon",
   "version": "1.0.0",
-  "description": "Stremio addon for streaming videos from Seedr cloud storage",
+  "description": "Stream movies and series from your Seedr cloud storage directly in Stremio. Integrates with Torrentio for automatic torrent discovery and downloading.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -9,12 +9,19 @@
   },
   "keywords": [
     "stremio",
+    "stremio-addon",
     "seedr",
-    "streaming"
+    "streaming",
+    "torrent",
+    "torrentio",
+    "cloud-storage"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
+  "engines": {
+    "node": "24.x"
+  },
   "dependencies": {
     "stremio-addon-sdk": "^1.6.10",
     "axios": "^1.6.0",

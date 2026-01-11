@@ -1,0 +1,21 @@
+# Screenshot Placeholders
+
+Add the following screenshots to this folder:
+
+1. configure-page.png (1280×720px)
+   - Browser showing /configure page with device code displayed
+   - Should show the 8-character authorization code clearly
+
+2. seedr-auth.png (800×600px)
+   - Seedr devices page (https://www.seedr.cc/devices)
+   - Show the code input field
+
+3. stream-selection.png (1280×720px)
+   - Stream selection popup in Stremio
+   - Show streams with ✅ Ready and ⬇️ Download options
+
+Tips:
+- Use PNG format for best quality
+- Capture at 1x scale (not retina/2x)
+- Ensure all text is readable
+- Crop unnecessary browser chrome if needed
