@@ -6,9 +6,18 @@ const app = express();
 app.set('trust proxy', true);
 const PORT = process.env.PORT || 8000;
 
+// Handle OPTIONS preflight requests
+app.options("*", (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "*");
+    res.sendStatus(200);
+});
+
 // Enable CORS for all routes
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "*");
     next();
 });

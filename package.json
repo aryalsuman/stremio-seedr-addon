@@ -20,7 +20,7 @@
   "license": "MIT",
   "type": "commonjs",
   "engines": {
-    "node": "24.x"
+    "node": "20.x"
   },
   "dependencies": {
     "stremio-addon-sdk": "^1.6.10",
