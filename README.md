@@ -127,19 +127,6 @@ This addon uses Seedr's **public OAuth client** (`seedr_xbmc`) - the same one us
 - ✅ Tokens are valid for 1 year
 - ✅ Just deploy and configure - it works out of the box!
 
-### Multi-User Support
-
-Each user who installs the addon gets a **unique URL** with their token:
-
-```
-https://your-vercel-app.vercel.app/{your-unique-token}/manifest.json
-https://your-vercel-app.vercel.app/{another-token}/manifest.json
-```
-
-Tokens are completely isolated - users can never access each other's Seedr files.
-
----
-
 ## �🔗 Connect with Seedr
 
 After deployment, follow these steps to connect your Seedr account:
