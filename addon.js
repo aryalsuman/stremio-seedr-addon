@@ -35,6 +35,45 @@ const manifest = {
 const videoCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+function normalizeNameForMatch(value = "") {
+    return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function extractEpisodeToken(value = "") {
+    const normalized = normalizeNameForMatch(value);
+    const seasonEpisodeMatch = normalized.match(/\bs(\d{1,2})\s*e(\d{1,2})\b/);
+    if (seasonEpisodeMatch) {
+        return `s${seasonEpisodeMatch[1].padStart(2, "0")}e${seasonEpisodeMatch[2].padStart(2, "0")}`;
+    }
+
+    const altMatch = normalized.match(/\b(\d{1,2})x(\d{1,2})\b/);
+    if (altMatch) {
+        return `s${altMatch[1].padStart(2, "0")}e${altMatch[2].padStart(2, "0")}`;
+    }
+
+    return null;
+}
+
+function namesLikelyMatch(candidateName = "", targetName = "") {
+    const candidateNormalized = normalizeNameForMatch(candidateName);
+    const targetNormalized = normalizeNameForMatch(targetName);
+    const targetEpisode = extractEpisodeToken(targetName);
+    const candidateEpisode = extractEpisodeToken(candidateName);
+
+    if (targetEpisode) {
+        if (candidateEpisode !== targetEpisode) {
+            return false;
+        }
+
+        const targetWords = targetNormalized.split(" ").filter(Boolean).filter(word => word !== targetEpisode);
+        const titleSnippet = targetWords.slice(0, 4).join(" ");
+        return !titleSnippet || candidateNormalized.includes(titleSnippet);
+    }
+
+    const targetPrefix = targetNormalized.split(" ").slice(0, 6).join(" ");
+    return candidateNormalized.includes(targetPrefix) || targetNormalized.includes(candidateNormalized);
+}
+
 /**
  * Get videos with caching
  */
@@ -242,10 +281,9 @@ async function streamHandler(args, serverBaseUrl = "http://127.0.0.1:7000") {
                 // Check if this video might match the movie/episode
                 for (const stream of torrentStreams) {
                     const streamNameLower = (stream.filename || stream.title).toLowerCase();
-                    // Simple matching - could be improved
-                    // For series, we might need stricter matching (SxxExx)
-                    if (videoNameLower.includes(args.id.replace("tt", "")) ||
-                        streamNameLower.includes(videoNameLower.replace(/\.[^/.]+$/, ""))) {
+                    if (namesLikelyMatch(video.name, stream.filename || stream.title) ||
+                        videoNameLower.includes(args.id.replace("tt", "")) ||
+                        namesLikelyMatch(streamNameLower, video.name.replace(/\.[^/.]+$/, ""))) {
 
                         try {
                             const streamData = await seedrApi.getStreamUrl(accessToken, video.id);

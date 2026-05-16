@@ -5,6 +5,13 @@ const seedrApi = require("./seedrApi");
 const app = express();
 app.set('trust proxy', true);
 const PORT = process.env.PORT || 8000;
+const VERBOSE_LOGS = process.env.DEBUG_SEEDR === "1";
+
+function verboseLog(...args) {
+    if (VERBOSE_LOGS) {
+        console.log(...args);
+    }
+}
 
 // Handle OPTIONS preflight requests
 app.options("*", (req, res) => {
@@ -156,7 +163,7 @@ app.get("/configure", async (req, res) => {
         <div id="auth-steps" class="hidden">
             <div class="step">
                 <div class="step-number">1</div>
-                <p>Visit <a href="https://www.seedr.cc/devices" target="_blank" class="link">seedr.cc/devices</a></p>
+                <p>Visit <a id="verification-link" href="https://v2.seedr.cc/devices" target="_blank" class="link">seedr.cc/devices</a></p>
             </div>
             
             <div class="step">
@@ -214,6 +221,17 @@ app.get("/configure", async (req, res) => {
                 
                 deviceCode = data.device_code;
                 document.getElementById('user-code').textContent = data.user_code;
+                
+                // Update verification link if provided
+                let vUri = data.verification_uri_complete || data.verification_uri;
+                if (vUri) {
+                    if (vUri.startsWith('/')) {
+                        vUri = 'https://v2.seedr.cc' + vUri;
+                    }
+                    const link = document.getElementById('verification-link');
+                    link.href = vUri;
+                    link.textContent = 'v2.seedr.cc' + (data.verification_uri_complete ? ' (auto-fill)' : '/devices');
+                }
                 
                 document.getElementById('loading').classList.add('hidden');
                 document.getElementById('auth-steps').classList.remove('hidden');
@@ -492,40 +510,162 @@ const processingLocks = new Set();
 // Cache for resolved stream URLs to prevent repetitive API calls
 const resolveCache = new Map();
 const RESOLVE_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+const VIDEO_EXTENSIONS = new Set([
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v",
+    ".mpg", ".mpeg", ".ts", ".m2ts", ".3gp", ".ogv"
+]);
+
+function isVideoFile(file) {
+    if (!file || !file.name) {
+        return false;
+    }
+
+    if (file.play_video === true) {
+        return true;
+    }
+
+    const lowerName = file.name.toLowerCase();
+    return [...VIDEO_EXTENSIONS].some(ext => lowerName.endsWith(ext));
+}
+
+function findPlayableFile(files = []) {
+    return files.find(isVideoFile) || files[0] || null;
+}
+
+async function tryResolveCompletedTransfer(accessToken, transfer) {
+    if (!transfer) {
+        return null;
+    }
+
+    if (transfer.completedFolderId) {
+        const completedContent = await seedrApi.getFolder(accessToken, transfer.completedFolderId);
+        const completedFile = findPlayableFile(completedContent.files || []);
+        if (completedFile) {
+            return completedFile;
+        }
+    }
+
+    const taskContents = await seedrApi.getTaskContents(accessToken, transfer.id);
+    return findPlayableFile(taskContents.files || []);
+}
+
+function isRetryableStreamError(error) {
+    const status = error?.response?.status;
+    return status === 403 || status === 404;
+}
+
+function normalizeNameForMatch(value = "") {
+    return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function extractEpisodeToken(value = "") {
+    const normalized = normalizeNameForMatch(value);
+    const seasonEpisodeMatch = normalized.match(/\bs(\d{1,2})\s*e(\d{1,2})\b/);
+    if (seasonEpisodeMatch) {
+        return `s${seasonEpisodeMatch[1].padStart(2, "0")}e${seasonEpisodeMatch[2].padStart(2, "0")}`;
+    }
+
+    const altMatch = normalized.match(/\b(\d{1,2})x(\d{1,2})\b/);
+    if (altMatch) {
+        return `s${altMatch[1].padStart(2, "0")}e${altMatch[2].padStart(2, "0")}`;
+    }
+
+    return null;
+}
+
+function namesLikelyMatch(candidateName = "", targetName = "") {
+    const candidateNormalized = normalizeNameForMatch(candidateName);
+    const targetNormalized = normalizeNameForMatch(targetName);
+    const targetEpisode = extractEpisodeToken(targetName);
+    const candidateEpisode = extractEpisodeToken(candidateName);
+
+    if (targetEpisode) {
+        if (candidateEpisode !== targetEpisode) {
+            return false;
+        }
+
+        const targetWords = targetNormalized.split(" ").filter(Boolean).filter(word => word !== targetEpisode);
+        const titleSnippet = targetWords.slice(0, 4).join(" ");
+        return !titleSnippet || candidateNormalized.includes(titleSnippet);
+    }
+
+    const targetPrefix = targetNormalized.split(" ").slice(0, 6).join(" ");
+    return candidateNormalized.includes(targetPrefix) || targetNormalized.includes(candidateNormalized);
+}
+
+function findMatchingTransfer(transfers, infoHash, targetName) {
+    const normalizedInfoHash = (infoHash || "").toLowerCase();
+
+    let transfer = transfers.find(t =>
+        t.torrent?.hash && t.torrent.hash.toLowerCase() === normalizedInfoHash
+    );
+
+    if (transfer) {
+        return transfer;
+    }
+
+    transfer = transfers.find(t =>
+        t.name && targetName && namesLikelyMatch(t.name, targetName)
+    );
+
+    if (transfer) {
+        return transfer;
+    }
+
+    return null;
+}
+
+async function getPreferredTransfer(accessToken, preferredTaskId, transfers, infoHash, targetName) {
+    if (preferredTaskId) {
+        try {
+            return await seedrApi.refreshTransfer(accessToken, { id: preferredTaskId });
+        } catch (error) {
+            console.warn(`Failed to refresh preferred task ${preferredTaskId}:`, error.response?.data || error.message);
+        }
+    }
+
+    const matchedTransfer = findMatchingTransfer(transfers, infoHash, targetName);
+    if (!matchedTransfer) {
+        return null;
+    }
+
+    return seedrApi.refreshTransfer(accessToken, matchedTransfer);
+}
 
 app.get("/:token/resolve/:infoHash", async (req, res) => {
     const { token, infoHash } = req.params;
     const { name, trackers, fileIdx, torrentFile } = req.query;
     const accessToken = decodeURIComponent(token);
-
+    
+    verboseLog(`\n🔗 Resolve request received for infoHash: ${infoHash}`);
     // Check cache first
     if (resolveCache.has(infoHash)) {
         const cached = resolveCache.get(infoHash);
         if (Date.now() - cached.timestamp < RESOLVE_CACHE_TTL) {
-            console.log(`⚡ Using cached stream URL for ${infoHash}`);
+            verboseLog(`⚡ Using cached stream URL for ${infoHash}`);
             return res.redirect(307, cached.url);
         } else {
             resolveCache.delete(infoHash);
         }
     }
 
-    console.log("============================================");
-    console.log("🔄 Resolve request for infoHash:", infoHash);
-    console.log("   Name:", name);
-    console.log("   Type:", torrentFile ? "Torrent File" : "Magnet Link");
-    console.log("============================================");
+    verboseLog("============================================");
+    verboseLog("🔄 Resolve request for infoHash:", infoHash);
+    verboseLog("   Name:", name);
+    verboseLog("   Type:", torrentFile ? "Torrent File" : "Magnet Link");
+    verboseLog("============================================");
 
     // Wait if this infoHash is already being processed (simple busy-wait or just join)
     // Since we can't easily "join" the other request's specific state in this architecture without complex event emitters,
     // we will just wait until the lock is released, then proceed with checks (which should catch the newly added transfer).
     if (processingLocks.has(infoHash)) {
-        console.log("⏳ Another request is processing this infoHash. Waiting for lock release...");
+        verboseLog("⏳ Another request is processing this infoHash. Waiting for lock release...");
         let waitTime = 0;
         while (processingLocks.has(infoHash) && waitTime < 30000) { // 30s max wait
             await new Promise(r => setTimeout(r, 1000));
             waitTime += 1000;
         }
-        console.log("🔓 Lock released (or timed out). Proceeding...");
+        verboseLog("🔓 Lock released (or timed out). Proceeding...");
     }
 
     try {
@@ -533,9 +673,10 @@ app.get("/:token/resolve/:infoHash", async (req, res) => {
         const maxAttempts = 100; // 100 * 3s = 5 minutes
         const pollInterval = 3000;
         let attempts = 0;
+        let preferredTaskId = null;
 
         const pollForCompletion = async () => {
-            console.log("⏳ Waiting for download to complete...");
+            verboseLog("⏳ Waiting for download to complete...");
             let lastProgress = -1;
 
             while (attempts < maxAttempts) {
@@ -544,21 +685,42 @@ app.get("/:token/resolve/:infoHash", async (req, res) => {
 
                 // Check transfers for progress
                 let transfers = await seedrApi.getActiveTransfers(accessToken);
-                const transfer = transfers.find(t =>
-                    t.name && name && t.name.toLowerCase().includes(name.toLowerCase().substring(0, 20))
-                );
+                let transfer = await getPreferredTransfer(accessToken, preferredTaskId, transfers, infoHash, name);
 
                 if (transfer) {
+                    preferredTaskId = preferredTaskId || transfer.id;
                     const progress = transfer.progress || 0;
                     if (progress !== lastProgress) {
-                        console.log(`   Progress: ${progress}% (attempt ${attempts}/${maxAttempts})`);
+                        verboseLog(`   Progress: ${progress}% (attempt ${attempts}/${maxAttempts})`);
                         lastProgress = progress;
                     }
 
                     if (progress >= 100) {
                         // Download complete - wait a moment for file to be moved to folder
                         // If it stays at 100% without disappearing from transfers, it might be processing
-                        if (attempts % 5 === 0) console.log("   (Stuck at 100%? waiting for file processing...)");
+                        if (attempts % 5 === 0) verboseLog("   (Stuck at 100%? waiting for file processing...)");
+
+                        const completedFile = await tryResolveCompletedTransfer(accessToken, transfer);
+                        if (completedFile) {
+                            verboseLog("✅ Download complete via task contents:", completedFile.name);
+                            try {
+                                const streamData = await seedrApi.getStreamUrl(accessToken, completedFile.id);
+                                if (streamData && streamData.url) {
+                                    verboseLog("🎬 Redirecting to stream URL");
+                                    resolveCache.set(infoHash, {
+                                        url: streamData.url,
+                                        timestamp: Date.now()
+                                    });
+                                    return res.redirect(307, streamData.url);
+                                }
+                            } catch (error) {
+                                if (isRetryableStreamError(error)) {
+                                    verboseLog("   Stream URL not ready yet, continuing to poll...");
+                                } else {
+                                    throw error;
+                                }
+                            }
+                        }
                     }
                 } else {
                     // If no transfer found, it might be done or failed.
@@ -574,29 +736,28 @@ app.get("/:token/resolve/:infoHash", async (req, res) => {
                 }
 
                 const matchingVideo = videos.find(v => {
-                    const videoNameLower = v.name.toLowerCase();
-                    const searchName = (name || "").toLowerCase();
-                    // Try more flexible matching
-                    // 1. Exact substring match (first 20 chars)
-                    const match1 = videoNameLower.includes(searchName.substring(0, 20));
-                    // 2. Reverse match (search name includes video name - careful with short names)
-                    const cleanVideoName = videoNameLower.replace(/\.[^/.]+$/, ""); // remove extension
-                    const match2 = searchName.includes(cleanVideoName.substring(0, 20));
-
-                    return match1 || match2;
+                    return namesLikelyMatch(v.name, name || "");
                 });
 
                 if (matchingVideo) {
-                    console.log("✅ Download complete:", matchingVideo.name);
-                    const streamData = await seedrApi.getStreamUrl(accessToken, matchingVideo.id);
-                    if (streamData && streamData.url) {
-                        console.log("🎬 Redirecting to stream URL");
-                        // Cache the successful result
-                        resolveCache.set(infoHash, {
-                            url: streamData.url,
-                            timestamp: Date.now()
-                        });
-                        return res.redirect(307, streamData.url);
+                    verboseLog("✅ Download complete:", matchingVideo.name);
+                    try {
+                        const streamData = await seedrApi.getStreamUrl(accessToken, matchingVideo.id);
+                        if (streamData && streamData.url) {
+                            verboseLog("🎬 Redirecting to stream URL");
+                            // Cache the successful result
+                            resolveCache.set(infoHash, {
+                                url: streamData.url,
+                                timestamp: Date.now()
+                            });
+                            return res.redirect(307, streamData.url);
+                        }
+                    } catch (error) {
+                        if (isRetryableStreamError(error)) {
+                            verboseLog("   Matching file found, but stream URL is not ready yet...");
+                        } else {
+                            throw error;
+                        }
                     }
                 } else if (!transfer && attempts > 5) {
                     // If no active transfer and no video found after a few attempts, 
@@ -604,19 +765,19 @@ app.get("/:token/resolve/:infoHash", async (req, res) => {
                     // Or look for the specific folder we added to?
                     // For now, just log that we haven't found it yet.
                     if (attempts % 5 === 0) {
-                        console.log(`   ❓ No transfer and no matching video found yet for "${name}"`);
+                        verboseLog(`   ❓ No transfer and no matching video found yet for "${name}"`);
                         // DEBUG: Inspect what IS there
                         if (videos.length > 0) {
-                            console.log(`      Available videos: ${videos.map(v => v.name).join(", ")}`);
+                            verboseLog(`      Available videos: ${videos.map(v => v.name).join(", ")}`);
                         } else {
-                            console.log("      No videos found in account.");
+                            verboseLog("      No videos found in account.");
                         }
                     }
                 }
             }
 
             // Timeout reached
-            console.log("⏰ Timeout waiting for download");
+            console.warn("⏰ Timeout waiting for download");
             return res.status(408).json({
                 error: "Download timeout",
                 message: "The download is taking longer than expected. Please check Seedr Downloads catalog and try again."
@@ -645,59 +806,64 @@ app.get("/:token/resolve/:infoHash", async (req, res) => {
             torrentData = decodeURIComponent(torrentFile);
         }
 
-        console.log("🔒 Acquiring processing lock...");
+        verboseLog("🔒 Acquiring processing lock...");
         processingLocks.add(infoHash);
 
         try {
             // Step 1: Check if folder exists for this info_hash (cached downloads)
-            console.log("📁 Looking for existing folder...");
+            verboseLog("📁 Looking for existing folder...");
             let targetFolder = await seedrApi.getFolderByName(accessToken, infoHash);
 
             if (targetFolder) {
-                console.log("✅ Using existing folder:", targetFolder.id);
+                verboseLog("✅ Using existing folder:", targetFolder.id);
 
                 // Check if torrent is already downloading or completed in this folder
                 const folderContent = await seedrApi.getFolder(accessToken, targetFolder.id);
 
                 if (folderContent.folders && folderContent.folders.length > 0) {
-                    console.log("✅ Torrent already completed in this folder");
+                    verboseLog("✅ Torrent already completed in this folder");
                     // Get files from the first subfolder (completed torrent)
                     const completedFolder = folderContent.folders[0];
                     const completedContent = await seedrApi.getFolder(accessToken, completedFolder.id);
 
                     if (completedContent.files && completedContent.files.length > 0) {
                         // Find a playable video file
-                        const videoFile = completedContent.files.find(f => f.play_video);
+                        const videoFile = findPlayableFile(completedContent.files);
                         if (videoFile) {
-                            console.log("🎬 Found playable file:", videoFile.name);
-                            const streamData = await seedrApi.getStreamUrl(accessToken, videoFile.folder_file_id);
+                            verboseLog("🎬 Found playable file:", videoFile.name);
+                            const streamData = await seedrApi.getStreamUrl(accessToken, videoFile.id);
                             if (streamData && streamData.url) {
-                                console.log("🎬 Redirecting to stream URL");
+                                verboseLog("🎬 Redirecting to stream URL");
                                 return res.redirect(307, streamData.url);
                             }
                         }
                     }
-                } else if (folderContent.torrents && folderContent.torrents.length > 0) {
-                    console.log("⏳ Torrent already downloading in this folder, waiting for completion...");
-                    // Don't add again - skip to polling
-                    return pollForCompletion();
+                } else {
+                    const folderTransfers = await seedrApi.getActiveTransfers(accessToken);
+                    const relatedTransfer = folderTransfers.find(t =>
+                        t.folderId === targetFolder.id ||
+                        t.completedFolderId === targetFolder.id ||
+                        (findMatchingTransfer([t], infoHash, name))
+                    );
+
+                    if (relatedTransfer) {
+                        verboseLog("⏳ Torrent already downloading for this folder, waiting for completion...");
+                        // Don't add again - skip to polling
+                        return pollForCompletion();
+                    }
                 }
             }
 
             // Step 1.5: Check if torrent is already in active transfers (prevent duplicate additions)
-            console.log("🔍 Checking for existing transfers...");
+            verboseLog("🔍 Checking for existing transfers...");
             const activeTransfers = await seedrApi.getActiveTransfers(accessToken);
-            const existingTransfer = activeTransfers.find(t => {
-                if (!t.name || !name) return false;
-                const tNameLower = t.name.toLowerCase();
-                const searchName = name.toLowerCase();
-                return tNameLower.includes(searchName.substring(0, 30)) ||
-                    tNameLower.includes(infoHash.substring(0, 16));
-            });
+            const existingTransfer = findMatchingTransfer(activeTransfers, infoHash, name);
 
             if (existingTransfer) {
-                console.log("⏳ Torrent already in transfer queue, waiting for completion...");
-                console.log("   Current progress:", existingTransfer.progress || 0, "%");
+                const refreshedTransfer = await seedrApi.refreshTransfer(accessToken, existingTransfer);
+                preferredTaskId = refreshedTransfer.id || existingTransfer.id;
+                verboseLog("⏳ Torrent already in transfer queue, waiting for completion...");
+                verboseLog("   Current progress:", refreshedTransfer.progress || 0, "%");
                 // Skip adding - go straight to polling
                 attempts = 0; // Reset attempts counter
                 return pollForCompletion();
@@ -705,22 +871,17 @@ app.get("/:token/resolve/:infoHash", async (req, res) => {
 
             // Step 1.8: Check if the file is already completed and in the library 
             // (Previous check only looked for folder named infoHash, but Magnet links created folders with torrent name)
-            console.log("🔍 Checking for existing completed files...");
+            verboseLog("🔍 Checking for existing completed files...");
             const allVideos = await seedrApi.getAllVideoFiles(accessToken);
             const existingVideo = allVideos.find(v => {
-                const videoNameLower = v.name.toLowerCase();
-                const searchName = (name || "").toLowerCase();
-                const match1 = videoNameLower.includes(searchName.substring(0, 20));
-                const cleanVideoName = videoNameLower.replace(/\.[^/.]+$/, "");
-                const match2 = searchName.includes(cleanVideoName.substring(0, 20));
-                return match1 || match2;
+                return namesLikelyMatch(v.name, name || "");
             });
 
             if (existingVideo) {
-                console.log("✅ Match found in library:", existingVideo.name);
+                verboseLog("✅ Match found in library:", existingVideo.name);
                 const streamData = await seedrApi.getStreamUrl(accessToken, existingVideo.id);
                 if (streamData && streamData.url) {
-                    console.log("🎬 Redirecting to stream URL (Cached)");
+                    verboseLog("🎬 Redirecting to stream URL (Cached)");
                     resolveCache.set(infoHash, {
                         url: streamData.url,
                         timestamp: Date.now()
@@ -733,15 +894,16 @@ app.get("/:token/resolve/:infoHash", async (req, res) => {
             let addResult;
             let retryCount = 0;
             const maxRetries = 1;
+            let hasClearedAccountForSpaceIssue = false;
 
             while (retryCount <= maxRetries) {
                 try {
                     if (isTorrentFile) {
-                        console.log(`📥 Adding torrent file to Seedr (Attempt ${retryCount + 1})...`);
+                        verboseLog(`📥 Adding torrent file to Seedr (Attempt ${retryCount + 1})...`);
                         addResult = await seedrApi.addTorrentFile(accessToken, torrentData, name || `torrent-${infoHash}.torrent`);
                     } else {
-                        console.log(`📥 Adding magnet to Seedr (Attempt ${retryCount + 1})...`);
-                        addResult = await seedrApi.addMagnet(accessToken, magnet, -1);
+                        verboseLog(`📥 Adding magnet to Seedr (Attempt ${retryCount + 1})...`);
+                        addResult = await seedrApi.addMagnet(accessToken, magnet, 0);
                     }
 
                     // Check for "soft" failures that are actually successes-with-conditions in API (result: "queue_full...")
@@ -752,51 +914,62 @@ app.get("/:token/resolve/:infoHash", async (req, res) => {
 
                     // If we get here and result is true/success, we are done
                     if (addResult.result === true || addResult.result === "success") {
-                        console.log("✅ Torrent added to active downloads");
+                        preferredTaskId = addResult.user_torrent_id || preferredTaskId;
+                        verboseLog("✅ Torrent added to active downloads");
                         break;
                     } else {
+                        preferredTaskId = addResult.user_torrent_id || preferredTaskId;
                         // Unknown success code, but assume success
-                        console.log("✅ Torrent added successfully (code: " + addResult.result + ")");
+                        verboseLog("✅ Torrent added successfully (code: " + addResult.result + ")");
                         break;
                     }
 
                 } catch (error) {
                     console.error(`❌ Attempt ${retryCount + 1} failed:`, error.message);
 
-                    // If last retry or not a space issue (optional check, but good for safety), rethrow
-                    // Actually, we want to clear ONLY on space/queue issues or if we just want to force clear on any error (risky)
-                    // User said: "if no space is available then clear all"
-                    // So we check for keywords in error or the specific codes above
+                    const reasonPhrase = error.reason_phrase || "";
                     const isSpaceIssue = error.message.includes("not_enough_space") ||
-                        error.message.includes("queue_full") ||
-                        error.message.includes("storage_full"); // Add more keywords if needed
+                        error.message.includes("storage_full") ||
+                        reasonPhrase.includes("not_enough_space") ||
+                        reasonPhrase.includes("queue_full") ||
+                        reasonPhrase.includes("storage_full");
 
-                    if (retryCount < maxRetries && isSpaceIssue) {
-                        console.log("⚠️  Space/Queue limit reached. Clearing Seedr account as requested...");
+                    if (retryCount < maxRetries && isSpaceIssue && !hasClearedAccountForSpaceIssue) {
+                        console.warn("⚠️  Seedr space/queue limit reached. Clearing Seedr content and retrying...");
 
                         // If it was added to wishlist during the failed attempt (soft fail), delete it first to be clean
-                        if (addResult && addResult.wt && addResult.wt.id) {
-                            await seedrApi.deleteFromWishlist(accessToken, addResult.wt.id);
+                        const wishlistId = addResult?.wt?.id || error.wt?.id;
+                        if (wishlistId) {
+                            try {
+                                await seedrApi.deleteFromWishlist(accessToken, wishlistId);
+                            } catch (wishlistError) {
+                                console.warn("⚠️  Failed to delete wishlist item before retry:", wishlistError.response?.data || wishlistError.message);
+                            }
                         }
 
                         const clearResult = await seedrApi.clearAccount(accessToken);
                         if (!clearResult.result) {
-                            console.error("❌ Failed to clear account:", clearResult.error);
+                            console.error("❌ Failed to clear Seedr content:", clearResult.error);
                             // If clear fails, we probably can't add anyway, but let loop continue to fail naturally or try
                         }
+                        hasClearedAccountForSpaceIssue = true;
                         retryCount++;
                         // Continue to next iteration (retry)
                     } else {
-                        // No more retries or not a space issue
-                        return res.status(507).json({
-                            error: "Storage full or queue full",
-                            message: "Not enough space in Seedr. Attempted to clear account but failed or space still insufficient."
+                        const statusCode = isSpaceIssue ? 507 : 500;
+                        const message = isSpaceIssue
+                            ? "Seedr reported a space or queue limit. Attempted to clear account but the add still could not proceed."
+                            : error.message;
+
+                        return res.status(statusCode).json({
+                            error: isSpaceIssue ? "Storage full" : "Failed to add torrent",
+                            message
                         });
                     }
                 }
             }
         } finally {
-            console.log("🔓 Releasing processing lock...");
+            verboseLog("🔓 Releasing processing lock...");
             processingLocks.delete(infoHash);
         }
 
